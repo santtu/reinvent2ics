@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+#
+# Copyright 2018 Santeri Paavolainen
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from pyquery import PyQuery as pq
+import sys
+import dateparser
+import re
+from icalendar import Calendar, Event
+import argparse
+
+DATE_RE = re.compile(
+    r'^(?i)(?P<date>.+),\s*'
+    r'(?P<start>\d+:\d+\s+(?:AM|PM))'
+    r'\s+-\s+'
+    r'(?P<end>\d+:\d+\s+(?:AM|PM))')
+
+
+def parse_html(d):
+    d('.speakers br').remove()
+
+    for s in d(".sessionRow").items():
+        # the session time and room require a bit more cleanup
+        t = s.find('.sessionTimeList')
+        t.find('div').remove()
+        room = t.find('.sessionRoom')
+        room.remove()
+
+        loc = room.text().lstrip('–- ')
+        venue = loc.split(',')[0]
+
+        when = t.text()
+
+        if when.startswith("There aren't any available"):
+            # print("Skipping", s)
+            continue
+
+        m = DATE_RE.match(when)
+
+        assert m is not None, \
+            "{!r} was not expected session time pattern".format(when)
+
+        def dp(s):
+            return dateparser.parse(
+                "{} {}".format(m.group('date'), s),
+                settings={'TIMEZONE': 'US/Pacific',
+                          'RETURN_AS_TIMEZONE_AWARE': True})
+
+        start = dp(m.group('start'))
+        end = dp(m.group('end'))
+
+        yield {
+            "id": s.find(".abbreviation").text().split(' ')[0],
+            "title": s.find('.title').text(),
+            "abstract": s.find('.abstract').text(),
+            "type": s.find('.type').text(),
+            "speakers": s.find('.speakers').text(),
+            "location": loc,
+            "venue": venue,
+            "schedule": when,
+            "start": start,
+            "end": end,
+        }
+
+
+def html_file_to_ics(file_name):
+    d = pq(filename=file_name)
+
+    cal = Calendar()
+    for e in parse_html(d):
+        event = Event()
+        event.add('dtstart', e['start'], encode=True)
+        event.add('dtend', e['end'], encode=True)
+        event.add('summary', "{}: {} - {}".format(
+            e['venue'], e['id'], e['title']))
+        event.add('description', e['abstract'])
+        event.add('location', e['location'])
+        event.add('category', e['type'])
+
+        cal.add_component(event)
+
+    return cal
+
+
+def get_parser():
+    parser = argparse.ArgumentParser(
+        description='Convert re:Invent "interests" to ICS')
+    parser.add_argument('filename', metavar='FILENAME',
+                        default='/dev/stdin', nargs='?',
+                        help='The HTML file to parse, defaults to STDIN')
+    return parser
+
+
+def main():
+    args = get_parser().parse_args()
+    cal = html_file_to_ics(args.filename)
+    print(cal.to_ical().decode('utf-8'), end='')
+
+
+if __name__ == '__main__':
+    main()
